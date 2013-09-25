@@ -3,91 +3,173 @@
 
 #include <cstdio>
 #include <ctime>
+#include <thread>
 #include <cmath>
+#include <cstdlib>
 
-std::vector<int> MazeSolver::SolveMaze(std::vector<std::vector<int> > walls)
+std::mutex MazeSolver::deadEndsMutex;
+std::set<int> MazeSolver::treatedDeadEnds;
+bool isIntersection(unsigned int cell, MazeSolver::Maze* walls);
+
+//#define DEBUG
+#ifdef DEBUG
+	#define		D(...)	do { printf( __VA_ARGS__ ); fflush(stdout); } while (0)
+#else
+	#define		D(...) 	((void)0)
+#endif
+
+void backtrackFromDeadEnds(int i, int mazeDimension, MazeSolver::Maze* walls, 
+				std::stack<int>* deadEnds, std::stack<NewDeadEnd>* locallyTreatedDeadEnds) 
 {
-	// The path that solves the maze
-	std::vector<int> path;
-	
-	// Implment your algorithm here
-	
-	// Return the final path
-	return path;
+	while(true) {
+		//Try to obtain a dead end
+		//D("%d: Obtaining lock...\n", i);
+		MazeSolver::deadEndsMutex.lock();
+		if(deadEnds->size() == 0) {
+			//No more dead ends; stop the thread.
+			MazeSolver::deadEndsMutex.unlock();
+			//D("%d, Stopping thread, no more dead ends\n", i);
+			break;
+		}
+		int deadEnd = deadEnds->top();
+		deadEnds->pop();
+		//D("%d: Working with dead end at %d\n", i, deadEnd);
+		MazeSolver::deadEndsMutex.unlock();
+		
+		//Go back up the path to the first intersection
+		Direction directionComingFrom; //Direction we come from, entering the current cell
+		unsigned int currentCell = deadEnd;
+		unsigned int previousCell = currentCell;
+		while(!isIntersection(currentCell, walls)) {			
+			//Could we avoid branching here?
+			if(((*walls)[currentCell][0] == 0) && (previousCell != currentCell - 1)) {
+				previousCell = currentCell;
+				currentCell--;
+				directionComingFrom = RIGHT;
+			} else if(((*walls)[currentCell][1] == 0) && (previousCell != currentCell - mazeDimension)) {
+				previousCell = currentCell;
+				currentCell -= mazeDimension;
+				directionComingFrom = DOWN;
+			} else if(((*walls)[currentCell][2] == 0) && (previousCell != currentCell + 1)) {
+				previousCell = currentCell;
+				currentCell++;
+				directionComingFrom = LEFT;
+			} else if(((*walls)[currentCell][3] == 0) && (previousCell != currentCell + mazeDimension)) {
+				previousCell = currentCell;
+				currentCell += mazeDimension;
+				directionComingFrom = UP;
+			} else {
+				D("%d: Couldn't move anywhere\n", i);
+				exit(1); //Something wrong happened, we are surrounded by walls
+			}
+		}		
+		
+		//We are done with this dead end, move on to the next.
+		NewDeadEnd nde = {directionComingFrom, currentCell};
+		locallyTreatedDeadEnds->push(nde);
+	}
 }
 
-// A simple example algorithm that solves the maze
-std::vector<int> MazeSolver::ExampleSolver(std::vector<std::vector<int> > walls)
+bool isIntersection(unsigned int cell, MazeSolver::Maze* walls) {		
+	//Consider the beginning and end as intersections
+	if(cell == 0 || cell == walls->size() - 1)
+		return true;
+		
+	return 	(((*walls)[cell][0] == 0) + 
+			((*walls)[cell][1] == 0) +
+			((*walls)[cell][2] == 0) +
+			((*walls)[cell][3] == 0) > 2);
+}
+
+std::vector<int> MazeSolver::SolveMaze(Maze walls)
 {
-	// The path that solves the maze
-	std::vector<int> path;
-
-	// Store the status of visited cells
-	std::vector<bool> visited (walls.size(), false);
-
-	int totalNumber = walls.size();						// Total number of cells
-	int dimension = (int) sqrt((float)totalNumber);	// Get dimension of the maze
-	int currentCell = 0;								// Start from cell 0
-
-	path.push_back(currentCell);
-
-	while (currentCell < totalNumber - 1) {
-		visited[currentCell] = true;	// Mark current cell as visited
-
-		std::vector<int> neighbors;
-
-		if (currentCell % dimension != 0 && currentCell > 0) {
-			// Left neighbor
-			// If it is adjacent to current cell and has not been visited,
-			// Add it to valid neighbors list
-			if (walls[currentCell][0] == 0 && !visited[currentCell - 1]) {
-				neighbors.push_back(currentCell - 1);
-			}
+	std::stack<int> deadEnds;
+	int mazeDimension = sqrt(walls.size());
+	
+	std::thread threads[MazeSolver::NUM_THREADS];
+	std::stack<NewDeadEnd> newDeadEnds[MazeSolver::NUM_THREADS];
+	
+	/* While we can, find dead ends through the maze. Backtrack from
+	them to the nearest intersection and block that way. When there
+	are no more dead ends to be found, we have a solution. */
+	while(true) {
+		findDeadEnds(deadEnds, walls);
+		D("Found %d dead ends\n", deadEnds.size());
+		if(deadEnds.empty())
+			break;
+			
+		for(int i = 0 ; i < MazeSolver::NUM_THREADS ; i++) {
+			threads[i] = std::thread(backtrackFromDeadEnds, i, mazeDimension, &walls, &deadEnds, newDeadEnds + i);
 		}
-		if (currentCell % dimension != dimension - 1 && currentCell < totalNumber - 1) {
-			// Right neighbor
-			// If it is adjacent to current cell and has not been visited,
-			// Add it to valid neighbors list
-			if (walls[currentCell][2] == 0 && !visited[currentCell + 1]) {
-				neighbors.push_back(currentCell + 1);
-			}
+		
+		D("Threads started\n");
+			
+		for(int i = 0 ; i < MazeSolver::NUM_THREADS ; i++) {
+			D("Joining thread %d... ", i);
+			threads[i].join();
+			D("Done\n");
 		}
-		if (currentCell >= dimension) {
-			// Upper neighbor
-			// If it is adjacent to current cell and has not been visited,
-			// Add it to valid neighbors list
-			if (walls[currentCell][1] == 0 && !visited[currentCell - dimension]) {
-				neighbors.push_back(currentCell - dimension);
+		
+		//Is it worth it to multithread this too?
+		for(int i = 0 ; i < MazeSolver::NUM_THREADS ; i++) {
+			while(!newDeadEnds[i].empty()) {
+				//Add "virtual walls" to the maze to block off the dead ends we came from.
+				NewDeadEnd deadEnd = newDeadEnds[i].top();
+				walls[deadEnd.id][deadEnd.direction] = -1;
+				newDeadEnds[i].pop();
 			}
-		}
-		if (currentCell < totalNumber - dimension) {
-			// Lower neighbor
-			// If it is adjacent to current cell and has not been visited,
-			// Add it to valid neighbors list
-			if (walls[currentCell][3] == 0 && !visited[currentCell + dimension]) {
-				neighbors.push_back(currentCell + dimension);
-			}
-		}
-
-		if (neighbors.size() > 0) {
-			// If there are valid neighbors
-			// Take the first one and move to it
-			currentCell = neighbors[0];
-			path.push_back(currentCell);
-		} else {
-			// Otherwise go back to previous cell
-			path.pop_back();
-			currentCell = path.back();
 		}
 	}
 	
-	// Return the final path
+	MazeSolver::treatedDeadEnds.clear();
+
+	//Go through the maze to construct the solution.
+	std::vector<int> path;
+	unsigned int cell = 0, previous = 0;
+	while(cell != walls.size() - 1) {
+		path.push_back(cell);
+		if((walls[cell][0] == 0) && (previous != cell - 1)) {
+			previous = cell;
+			cell--;
+		} else if((walls[cell][1] == 0) && (previous != cell - mazeDimension)) {
+			previous = cell;
+			cell -= mazeDimension;
+		} else if((walls[cell][2] == 0) && (previous != cell + 1)) {
+			previous = cell;
+			cell++;
+		} else if((walls[cell][3] == 0) && (previous != cell + mazeDimension)) {
+			previous = cell;
+			cell += mazeDimension;
+		} else {
+			D("This solution is broken.\n");
+			exit(1);
+		}
+	}
+	
+	path.push_back(walls.size() -1);
 	return path;
+}
+
+void MazeSolver::findDeadEnds(std::stack<int>& outDeadEnds, Maze& walls)
+{
+	//Ignore first and last cell (start and end)
+	for(unsigned int i = 1 ; i < walls.size() -1 ; i++) {
+		if(	((walls[i][0] != 0) + 
+			(walls[i][1] != 0) + 
+			(walls[i][2] != 0) + 
+			(walls[i][3] != 0)) > 2) {
+			if(MazeSolver::treatedDeadEnds.find(i) == MazeSolver::treatedDeadEnds.end()) {
+				outDeadEnds.push(i);
+				MazeSolver::treatedDeadEnds.insert(i);
+				//D("Found dead end at %d\n", i);
+			}
+		}
+	}
 }
 
 // Validate the path for a maze
 // Returns true if the path is valid, false otherwise
-bool MazeSolver::ValidatePath(int dimension, std::vector<std::vector<int> > walls, std::vector<int> path)
+bool MazeSolver::ValidatePath(int dimension, Maze walls, std::vector<int> path)
 {
 	// Get the path length and total number of cells in a maze
 	int pathLength = path.size();
@@ -159,7 +241,14 @@ int main(int argc,char *argv[])
 	for(int i = 0 ; i < tries ; i++) {
 		std::cout << "Starting run #" << (i + 1) << std::endl;
 		// Generate walls for the maze given the dimension
-		std::vector<std::vector<int> > walls = MazeGenerator::GenerateMaze(dimension);
+		MazeSolver::Maze walls = MazeGenerator::GenerateMaze(dimension);
+
+		#ifdef DEBUG
+		for(unsigned int i = 0 ; i < walls.size() ; i++) {
+			D("%d %d %d %d\n", walls[i][0], walls[i][1], walls[i][2], walls[i][3]);
+		}
+		D("\n");
+		#endif
 		
 		std::clock_t startTime;
 		startTime = std::clock();

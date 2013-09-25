@@ -1,7 +1,7 @@
 CC=g++
 LD=g++
 
-CC_FLAGS= -g -Wall
+CC_FLAGS= -g -Wall -std=c++11
 LDFLAGS=
 
 OBJECTS=MazeSolver.o MazeGenerator.o
