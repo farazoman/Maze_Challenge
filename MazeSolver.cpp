@@ -83,21 +83,22 @@ bool isIntersection(unsigned int cell, MazeSolver::Maze* walls) {
 
 std::vector<int> MazeSolver::SolveMaze(Maze walls)
 {
-	bool isDeadEndsEmpty = false;
 	std::stack<int> deadEnds;
 	int mazeDimension = sqrt(walls.size());
 	
 	std::thread threads[MazeSolver::NUM_THREADS];
 	std::stack<NewDeadEnd> newDeadEnds[MazeSolver::NUM_THREADS];
 	
-	if(deadEnds.empty())
-		break;
+	
 	/* While we can, find dead ends through the maze. Backtrack from
 	them to the nearest intersection and block that way. When there
 	are no more dead ends to be found, we have a solution. */
-	while(!isDeadEndsEmpty) {
+	while(true) {
 		findDeadEnds(deadEnds, walls);
 		D("Found %d dead ends\n", deadEnds.size());
+		
+		if(deadEnds.empty())
+			break;
 	
 		for(int i = 0 ; i < MazeSolver::NUM_THREADS ; i++) {
 			threads[i] = std::thread(backtrackFromDeadEnds, i, mazeDimension, &walls, &deadEnds, newDeadEnds + i);
